@@ -4,21 +4,78 @@ from services.ast_chunker import process_files
 from services.embedding_service import embed_documents
 from services.search_service import search
 from services.llm_service import generate_answer
-import os
+import os, json, re
 
 routes = Blueprint("routes", __name__)
 
-# temporary in-memory storage
 embedded_docs_store = {}
 tree_store = {}
 
-# Set DEBUG_MODE = True to show retrieved chunks, False to hide in production
 DEBUG_MODE = os.environ.get("DEBUG_MODE", "false").lower() == "true"
+
+def _build(d):
+    """Normalise a dict that came from the LLM."""
+    status = d.get("status", "ok")
+    answer = d.get("answer", "")
+    if isinstance(answer, str):
+        answer = answer.strip()
+        # answer field itself might be a nested JSON string — unwrap once
+        try:
+            inner = json.loads(answer)
+            if isinstance(inner, dict):
+                return _build(inner)
+        except (json.JSONDecodeError, ValueError):
+            pass
+    return {
+        "status": status,
+        "answer": answer,
+        "relevant_files": d.get("relevant_files", []),
+        "key_points": d.get("key_points", []),
+    }
+
+def _plain(text):
+    return {"status": "ok", "answer": text, "relevant_files": [], "key_points": []}
+
+def normalize_answer(raw):
+    # Already a dict
+    if isinstance(raw, dict):
+        return _build(raw)
+
+    if not isinstance(raw, str):
+        return _plain(str(raw))
+
+    text = raw.strip()
+
+    # Strip markdown code fences: ```json ... ``` or ``` ... ```
+    fence = re.match(r'^```(?:json)?\s*([\s\S]*?)\s*```$', text, re.DOTALL)
+    if fence:
+        text = fence.group(1).strip()
+
+    # Direct parse
+    try:
+        return _build(json.loads(text))
+    except (json.JSONDecodeError, ValueError):
+        pass
+
+    # JSON object buried anywhere in the string (e.g. "...\n{...}")
+    match = re.search(r'\{[\s\S]*\}', text)
+    if match:
+        try:
+            return _build(json.loads(match.group()))
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+    # Give up — treat as plain text answer
+    return _plain(text)
+
+
+# ── Routes ────────────────────────────────────────────────────────────────────
 
 @routes.route("/", methods=["GET"])
 def home():
     session.setdefault("chat_history", [])
     return render_template("index.html")
+
 
 @routes.route("/process", methods=["POST"])
 def process():
@@ -29,7 +86,6 @@ def process():
     embedded_docs_store[repo_url] = embed_documents(documents)
     tree_store[repo_url] = tree
 
-    # Reset chat history when a new repo is loaded
     session["chat_history"] = []
     session["current_repo"] = repo_url
     session.modified = True
@@ -42,20 +98,18 @@ def process():
         debug_mode=DEBUG_MODE,
     )
 
+
 @routes.route("/search", methods=["POST"])
 def search_route():
     query = request.form.get("query")
     repo_url = request.form.get("repo_url")
 
     docs = search(query, embedded_docs_store.get(repo_url, []))
-    answer = generate_answer(query, docs)
+    raw_answer = generate_answer(query, docs)
+    answer = normalize_answer(raw_answer)       # always a clean dict
 
-    # Append to session chat history
     history = session.get("chat_history", [])
-    history.append({
-        "question": query,
-        "answer": answer,
-    })
+    history.append({"question": query, "answer": answer})
     session["chat_history"] = history
     session.modified = True
 
@@ -68,6 +122,7 @@ def search_route():
         chat_history=history,
         debug_mode=DEBUG_MODE,
     )
+
 
 @routes.route("/clear", methods=["POST"])
 def clear():

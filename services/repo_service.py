@@ -35,6 +35,9 @@ def clone_and_tree(repo_url, clone_dir="repos"):
 
         # 🔹 build tree
         for root, dirs, files in os.walk(repo_path):
+            # Skip hidden directories like .git, .pytest_cache, etc.
+            dirs[:] = [d for d in dirs if not d.startswith('.')]
+            
             level = root.replace(repo_path, "").count(os.sep)
 
             tree.append({
