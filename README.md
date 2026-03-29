@@ -84,7 +84,8 @@ Open http://127.0.0.1:5000
 
 ## 🎥 Demo
 
-![Codescope Demo](demo.mp4)
+https://github.com/user-attachments/assets/cef0961d-b22e-417f-81a3-f3f117deea2b
+
 
 > **Note:** If the video doesn't play, you can view the [raw file here](demo.mp4).
 
